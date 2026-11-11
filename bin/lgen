@@ -1,0 +1,254 @@
+#!/usr/bin/env lua
+-- bin/lgen - ANSI Colorscheme Auditor & Checker CLI
+
+-- Ensure package.path finds local lgen module
+local script_dir = debug.getinfo(1, "S").source:sub(2):match("(.*/)") or "./"
+package.path = script_dir .. "../?.lua;" .. script_dir .. "../?/init.lua;" .. package.path
+
+local lgen = require("lgen")
+local cm = lgen.color_math
+local parser = lgen.markdown_parser
+local reporter = lgen.reporter
+local exporter = lgen.exporter
+
+local function print_help()
+  print([[
+lgen - ANSI Colorscheme Auditor, Checker & Exporter
+
+USAGE:
+    lgen <file.md> [OPTIONS]
+    cat <file.md> | lgen - [OPTIONS]
+    lgen <file1.md> --diff <file2.md>
+
+OPTIONS:
+    --strict             Apply strict project targets (APCA 75 / WCAG 7 warning thresholds)
+    --relaxed            Apply relaxed thresholds for muted/pastel themes
+    --vibrant            Enforce high chroma and rich saturation (prevents muted colors)
+    --preview            Render 8-line syntax & Git diff code preview (default: on)
+    --no-preview         Disable syntax code preview box
+    --diff <file.md>     Compare two theme files side-by-side with delta metrics
+    --export <format>    Export to emulator format (alacritty, kitty, ghostty, wezterm, nvim, foot, xresources, wt)
+    --cvd <type>         Simulate color vision deficiency (protan, deutan, tritan) in terminal report
+    --watch              Live watch mode: re-audits and redraws terminal preview on file save
+    --json               Output audit results as machine-readable JSON
+    --md                 Output audit results as a Markdown report
+    --fix                Plan and verify palette fixes; print patched Markdown
+    --write              Atomically replace the input file when using --fix
+    --max-iterations <n> Bound accepted fix steps (1-100, default: 12)
+    --fail-on-warn       Return exit 1 when warnings remain
+    -h, --help           Print this help message
+    -v, --version        Print version information
+
+EXIT CODES:
+    0 = no failures, 1 = audit failures (or --fail-on-warn), 2 = input/usage/I/O error
+    --fix uses the resulting audit; --diff uses the second theme audit.
+
+EXAMPLES:
+    lgen theme.md
+    lgen theme.md --export alacritty
+    lgen theme.md --cvd protan
+    lgen base.md --diff fixed.md
+    lgen theme.md --fix --write
+    lgen theme.md --watch
+]])
+end
+
+local function error_result(err, opts)
+  if opts.format == "json" then
+    print(reporter.encode_json({schema_version=1, error=err}))
+  else
+    io.stderr:write(err.code .. ": " .. err.message .. "\n")
+  end
+  return 2
+end
+
+local function read_file(path)
+  if path == "-" then
+    local text, err = io.stdin:read("*a")
+    if not text then return nil, {code="READ_ERROR", message=tostring(err)} end
+    return text
+  end
+  local doc, err = parser.parse_file(path)
+  if not doc then return nil, err end
+  return doc.raw
+end
+
+-- Stage beside the target, check for stale input, then replace atomically.
+local function write_file(path, original, content)
+  local current, err = read_file(path)
+  if not current then return nil, err end
+  if current ~= original then
+    return nil, {code="WRITE_CONFLICT", message="Theme changed since it was read"}
+  end
+  local seed = os.tmpname()
+  os.remove(seed)
+  local staged = path .. ".lgen-" .. (seed:match("[^/]+$") or "tmp")
+  local f, open_err = io.open(staged, "wb")
+  if not f then return nil, {code="WRITE_ERROR", message=tostring(open_err)} end
+  local ok, write_err = f:write(content)
+  local closed, close_err = f:close()
+  if not ok or not closed then
+    os.remove(staged)
+    return nil, {code="WRITE_ERROR", message=tostring(write_err or close_err)}
+  end
+  current, err = read_file(path)
+  if not current or current ~= original then
+    os.remove(staged)
+    return nil, err or {code="WRITE_CONFLICT", message="Theme changed before replacement"}
+  end
+  local renamed, rename_err = os.rename(staged, path)
+  if not renamed then
+    os.remove(staged)
+    return nil, {code="WRITE_ERROR", message=tostring(rename_err)}
+  end
+  return true
+end
+
+local function exit_status(diag, opts)
+  return (#diag.fails > 0 or (opts.fail_on_warn and #diag.warns > 0)) and 1 or 0
+end
+
+local function viewport(doc, cvd)
+  if not cvd then return doc end
+  local view = {meta=doc.meta, palette={}}
+  for slot, rgb in pairs(doc.palette) do
+    local simulated = cm.sim_cvd(rgb, cvd)
+    simulated.hex = cm.rgb_to_hex(simulated)
+    view.palette[slot] = simulated
+  end
+  return view
+end
+
+local function run_single_audit(path, content, opts)
+  if opts.fix then
+    local result, err = lgen.fix_string(content, opts)
+    if not result then return error_result(err, opts) end
+    if opts.write and result.content ~= content then
+      local ok, write_err = write_file(path, content, result.content)
+      if not ok then return error_result(write_err, opts) end
+      result.written = true
+    end
+    if opts.format == "json" then
+      print(reporter.format_fix_json(result))
+    elseif opts.write then
+      io.stderr:write(string.format("%s '%s': %d edits; %d failures, %d warnings remain (%s).\n",
+        result.written and "Updated" or "Unchanged", path, #result.edits,
+        #result.after.fails, #result.after.warns, result.status))
+    else
+      io.stdout:write(result.content)
+    end
+    return exit_status(result.after, opts)
+  end
+  local diag, doc = lgen.audit_string(content, opts)
+  if not diag then return error_result(doc, opts) end
+  if opts.format == "json" then print(reporter.format_json(diag))
+  elseif opts.format == "md" then print(reporter.format_markdown(diag, doc))
+  else
+    if opts.cvd then print("CVD viewport: " .. opts.cvd .. " (audit uses original palette)") end
+    print(reporter.format_terminal(diag, viewport(doc, opts.cvd), opts))
+  end
+  return exit_status(diag, opts)
+end
+
+local function main(args)
+  local path, opts = nil, {format="terminal", preview=true}
+  -- Determine machine output even when an earlier argument is invalid.
+  for _, value in ipairs(args) do if value == "--json" then opts.format = "json" end end
+  local function invalid(message)
+    return error_result({code="INVALID_ARGUMENT", message=message}, opts)
+  end
+  local i = 1
+  while i <= #args do
+    local value = args[i]
+    local flag, inline = value:match("^(%-%-[%w%-]+)=(.*)$")
+    flag = flag or value
+    if flag == "--help" or flag == "-h" then print_help(); return 0
+    elseif flag == "--version" or flag == "-v" then print("lgen " .. lgen._VERSION); return 0
+    elseif flag == "--strict" then opts.strictness = "strict"
+    elseif flag == "--relaxed" then opts.strictness = "relaxed"
+    elseif flag == "--vibrant" then opts.vibrant = true
+    elseif flag == "--preview" then opts.preview = true
+    elseif flag == "--no-preview" then opts.preview = false
+    elseif flag == "--json" then opts.format = "json"
+    elseif flag == "--md" then opts.format = "md"
+    elseif flag == "--fix" then opts.fix = true
+    elseif flag == "--write" then opts.write = true
+    elseif flag == "--watch" then opts.watch = true
+    elseif flag == "--fail-on-warn" then opts.fail_on_warn = true
+    elseif flag == "--diff" or flag == "--export" or flag == "--cvd" or flag == "--max-iterations" then
+      local argument = inline
+      if argument == nil then i = i + 1; argument = args[i] end
+      if not argument or argument == "" or (argument:match("^%-") and argument ~= "-") then
+        return invalid(flag .. " requires a value")
+      end
+      if flag == "--diff" then opts.diff_file = argument
+      elseif flag == "--export" then opts.export = argument
+      elseif flag == "--cvd" then opts.cvd = argument:lower()
+      else opts.max_iterations = tonumber(argument)
+        if not opts.max_iterations or opts.max_iterations < 1 or opts.max_iterations > 100 or opts.max_iterations ~= math.floor(opts.max_iterations) then
+          return invalid("--max-iterations must be an integer from 1 to 100")
+        end
+      end
+    elseif value == "-" or not value:match("^%-") then
+      if path then return invalid("Only one input file is allowed; use --diff for a second theme") end
+      path = value
+    else return invalid("Unknown option: " .. value) end
+    if inline ~= nil and flag ~= "--diff" and flag ~= "--export" and flag ~= "--cvd" and flag ~= "--max-iterations" then
+      return invalid(flag .. " does not take a value")
+    end
+    i = i + 1
+  end
+  if not path then return invalid("An input file or '-' for stdin is required") end
+  if opts.cvd and opts.cvd ~= "protan" and opts.cvd ~= "deutan" and opts.cvd ~= "tritan" then
+    return invalid("--cvd must be protan, deutan, or tritan")
+  end
+  if opts.write and (not opts.fix or path == "-") then return invalid("--write requires --fix and a file input") end
+  local modes = (opts.export and 1 or 0) + (opts.diff_file and 1 or 0) + (opts.fix and 1 or 0)
+  if modes > 1 then return invalid("--export, --diff, and --fix are mutually exclusive") end
+  if opts.max_iterations and not opts.fix then return invalid("--max-iterations requires --fix") end
+  if opts.fix and opts.format == "md" then return invalid("Use --fix with --json or raw Markdown output") end
+  if opts.export and opts.format ~= "terminal" then return invalid("--export emits its configuration format; omit --json/--md") end
+  if opts.watch and (path == "-" or opts.format ~= "terminal" or modes > 0) then
+    return invalid("--watch requires a file and terminal audit output")
+  end
+  if opts.diff_file == "-" and path == "-" then return invalid("Cannot read both diff inputs from stdin") end
+
+  local content, err = read_file(path)
+  if not content then return error_result(err, opts) end
+  if opts.export then
+    local diag, doc = lgen.audit_string(content, opts)
+    if not diag then return error_result(doc, opts) end
+    local out, export_err = exporter.export(doc.palette, opts.export, doc.meta)
+    if not out then return error_result({code="EXPORT_ERROR", message=export_err}, opts) end
+    io.stdout:write(out); return 0
+  elseif opts.diff_file then
+    local other, read_err = read_file(opts.diff_file)
+    if not other then return error_result(read_err, opts) end
+    local diag1, doc1 = lgen.audit_string(content, opts)
+    if not diag1 then return error_result(doc1, opts) end
+    local diag2, doc2 = lgen.audit_string(other, opts)
+    if not diag2 then return error_result(doc2, opts) end
+    if opts.format == "json" then
+      print('{"schema_version":1,"before":' .. reporter.format_json(diag1) .. ',"after":' .. reporter.format_json(diag2) .. '}')
+    elseif opts.format == "md" then
+      print(reporter.format_markdown(diag1, doc1)); print(reporter.format_markdown(diag2, doc2))
+    else print(reporter.format_diff(viewport(doc1, opts.cvd), viewport(doc2, opts.cvd), diag1, diag2, opts)) end
+    return exit_status(diag2, opts)
+  elseif opts.watch then
+    local previous = nil
+    while true do
+      if content ~= previous then
+        print("\27[2J\27[H")
+        run_single_audit(path, content, opts)
+        previous = content
+      end
+      os.execute("sleep 0.3")
+      local next_content, read_err = read_file(path)
+      if not next_content then return error_result(read_err, opts) end
+      content = next_content
+    end
+  end
+  return run_single_audit(path, content, opts)
+end
+
+os.exit(main(arg or {}))

@@ -1,0 +1,9 @@
+# Python test artifacts
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Crash dumps and interrupted atomic writes
+/core
+/core.[0-9]*
+*.lgen-*
