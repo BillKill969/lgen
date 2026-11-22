@@ -26,7 +26,7 @@ class AgentCLI(unittest.TestCase):
         pair = result["after"]["metrics"]["bright_pairs"]["12"]
         self.assertGreaterEqual(pair["lightness_gap"], 0.06)
         self.assertEqual(pair["required_gap"], 0.06)
-        self.assertEqual(result["after"]["metrics"]["policy"]["version"], "3")
+        self.assertEqual(result["after"]["metrics"]["policy"]["version"], "4")
 
     def test_math_fixes_and_model_metadata_reach_agent_json(self):
         p = run("-", "--fix", "--json", content="- bg: #666666\n- fg: #666666\n")
@@ -43,11 +43,12 @@ class AgentCLI(unittest.TestCase):
         self.assertGreaterEqual(metrics["contrast_scores"]["4"]["wcag"], 7)
         self.assertGreaterEqual(abs(metrics["contrast_scores"]["4"]["apca"]), 75)
         self.assertEqual(metrics["models"]["cvd"]["protan"], "vienot1999-srgb-daltonlens")
-        self.assertEqual(metrics["policy"]["version"], "3")
+        self.assertEqual(metrics["policy"]["version"], "4")
 
     def test_argument_and_input_errors_are_json(self):
         for args in [("--cvd",), ("--export",), ("--diff",),
                      ("--unknown",), ("--write",), ("--watch",),
+                     ("-", "--fix-background"),
                      ("-", "--write"), ("-", "--watch"),
                      ("-", "--fix", "--export", "kitty"),
                      ("-", "--fix", "--max-iterations", "0"),
@@ -93,6 +94,25 @@ class AgentCLI(unittest.TestCase):
         result = json.loads(p.stdout)
         self.assertEqual(result["status"], "limit")
         self.assertEqual(result["iterations"], 1)
+
+    def test_background_repair_is_opt_in(self):
+        text = "- bg: #19194f\n- fg: #555566\n"
+        fixed = run("-", "--fix", "--json", content=text)
+        self.assertEqual(fixed.returncode, 0, fixed.stderr)
+        self.assertEqual([edit["slot"] for edit in json.loads(fixed.stdout)["edits"]], ["fg"])
+        opted_in = run("-", "--fix", "--fix-background", "--json", content="- bg: #19194f\n- fg: #ffffff\n")
+        self.assertEqual(opted_in.returncode, 0, opted_in.stderr)
+        self.assertIn("bg", [edit["slot"] for edit in json.loads(opted_in.stdout)["edits"]])
+
+    def test_strict_foreground_warning_affects_exit_status(self):
+        text = "- bg: #ffffff\n- fg: #666666\n"
+        p = run("-", "--strict", "--fail-on-warn", "--json", content=text)
+        self.assertEqual(p.returncode, 1, p.stderr)
+        fixed = run("-", "--strict", "--fail-on-warn", "--fix", "--json", content=text)
+        self.assertEqual(fixed.returncode, 0, fixed.stderr)
+        scores = json.loads(fixed.stdout)["after"]["metrics"]["contrast_scores"]["fg"]
+        self.assertGreaterEqual(scores["wcag"], 7)
+        self.assertGreaterEqual(abs(scores["apca"]), 75)
 
     def test_viewport_does_not_change_audit_and_json_is_repeatable(self):
         args = ("test_themes/catppuccin_mocha.md", "--json")

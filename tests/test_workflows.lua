@@ -77,6 +77,36 @@ t.test("fix planning is bounded and reports unresolved collisions", function()
   t.assert_eq(err.code, "INVALID_OPTIONS")
 end)
 
+t.test("repair preserves tinted backgrounds and muted accents by default", function()
+  for _, slot in ipairs({"bg", "0"}) do
+    local text = "- " .. slot .. ": #19194f\n- fg: #555566\n"
+    local fixed = assert(lgen.fix_string(text))
+    t.assert_eq(#fixed.after.fails, 0)
+    t.assert_eq(#fixed.edits, 1)
+    t.assert_eq(fixed.edits[1].slot, "fg")
+    local opted_in = assert(lgen.fix_string("- " .. slot .. ": #19194f\n- fg: #ffffff\n", {fix_background=true}))
+    t.assert_true(not opted_in.content:find("#19194f", 1, true))
+  end
+  local muted = "- bg: #ffffff\n- blue: #666677\n"
+  t.assert_eq(assert(lgen.fix_string(muted)).content, muted)
+  t.assert_eq(#assert(lgen.fix_string(muted, {vibrant=true})).edits, 1)
+end)
+
+t.test("equally effective contrast repairs prefer the color closer to its target", function()
+  local text = "- bg: #000000\n- white: #111111\n- fg: #888888\n"
+  local fixed = assert(lgen.fix_string(text, {max_iterations=1}))
+  t.assert_eq(#fixed.edits, 1)
+  t.assert_eq(fixed.edits[1].slot, "fg")
+end)
+
+t.test("red and green collision repair verifies both color vision simulations", function()
+  local text = "- bg: #000000\n- red: #8c7150\n- green: #8c7150\n"
+  local fixed = assert(lgen.fix_string(text))
+  t.assert_true(#fixed.before.fails > 0)
+  t.assert_eq(#fixed.after.fails, 0)
+  t.assert_eq(assert(lgen.fix_string(fixed.content)).content, fixed.content)
+end)
+
 t.test("document edits do not cascade and support table entries", function()
   local text = "| bg | #ABCDEF |\n| 1 | #abc |\n| 2 | #123456 |\n"
   local doc = lgen.markdown_parser.parse(text)

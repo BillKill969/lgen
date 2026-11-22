@@ -54,11 +54,15 @@ local function options(doc, opts)
   return effective
 end
 
-local function audit_document(doc, opts)
+local function document_options(doc, opts)
   if not (doc.palette.bg or doc.palette[0]) then
     return nil, {code="INVALID_THEME", message="Theme must declare a background (bg or ANSI 0)"}
   end
-  local effective, err = options(doc, opts)
+  return options(doc, opts)
+end
+
+local function audit_document(doc, opts)
+  local effective, err = document_options(doc, opts)
   if not effective then return nil, err end
   return auditor.audit(doc.palette, effective), doc, effective
 end
@@ -82,8 +86,8 @@ function M.audit_palette(pal, opts)
 end
 
 local function fix_document(doc, opts)
-  local diag, err, effective = audit_document(doc, opts)
-  if not diag then return nil, err end
+  local effective, err = document_options(doc, opts)
+  if not effective then return nil, err end
   local result, plan_err = require("lgen.fix_plan").plan(doc, effective)
   if not result then return nil, plan_err end
   result.content = parser.apply_edits(doc, result.edits)

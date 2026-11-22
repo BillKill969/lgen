@@ -1,6 +1,6 @@
 # lgen handoff
 
-Updated 2026-11-11. `lgen` audits, adjusts, compares, and exports ANSI terminal palettes from Markdown using dependency-free Lua.
+`lgen` audits, adjusts, compares, and exports ANSI terminal palettes from Markdown using dependency-free Lua.
 
 ## Start here
 
@@ -17,10 +17,10 @@ Updated 2026-11-11. `lgen` audits, adjusts, compares, and exports ANSI terminal 
 | `lgen/init.lua` | Document workflows, option precedence, structured errors |
 | `lgen/markdown_parser.lua` | Content/file ingestion, aliases, source positions, precise slot edits |
 | `lgen/color_math.lua` | sRGB, Oklab/Oklch, gamut reduction, APCA/WCAG, named CVD simulations |
-| `lgen/policy.lua` | Shared project thresholds and acceptance predicates; current policy version 3 |
+| `lgen/policy.lua` | Shared project thresholds and acceptance predicates. Current policy version 4 |
 | `lgen/auditor.lua` | Palette measurements and categorized diagnostics |
 | `lgen/fixer.lua` | Quantized contrast, CVD, bright-tier, and style adjustments |
-| `lgen/fix_plan.lua` | Bounded whole-palette assessment of competing suggestions |
+| `lgen/fix_plan.lua` | Whole-palette ranking of single-slot suggestions and bounded pair repairs |
 | `lgen/reporter.lua` | Terminal/Markdown reports, deterministic JSON, comparisons |
 | `lgen/exporter.lua` | Eight terminal configuration output formats |
 
@@ -42,12 +42,10 @@ lua tests/all.lua
 python3 tests/test_cli.py
 ```
 
-Current coverage: 63 Lua tests across 14 suites and 8 Python CLI tests. Both suites were verified on Lua 5.4 and 5.5. Older Lua/LuaJIT/Neovim compatibility is intended but was not exercised in this environment.
+Set `LGEN_LUA` to run the CLI suite with a specific interpreter, such as `luajit`.
 
-`test_themes/catppuccin_mocha.md` is the upstream reference. The fixed Mocha theme has a distinct bright tier, audits with zero failures/warnings, and needs no further fix edits under policy 3. The vibrant theme is a separate fixture; its name does not imply a passing audit. Preserve these distinctions when refreshing fixtures.
+`test_themes/catppuccin_mocha.md` is the upstream reference. The fixed Mocha theme has a distinct bright tier and audits with zero failures and warnings under policy 4. The vibrant theme is a separate fixture. Preserve these distinctions when refreshing fixtures.
 
-## Environment and follow-up work
+## Follow-up work
 
-This workspace has no usable Git history. Do not infer an upstream URL from placeholder installation examples in archived material.
-
-Unimplemented directions: direct terminal-config ingestion, packaging, and CI integration. No terminal input adapters or distribution artifacts have been added.
+Open work includes direct terminal-config ingestion, packaging, and CI integration.

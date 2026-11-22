@@ -32,8 +32,8 @@ t.test("agent audit results identify models and distinguish style policy", funct
   local diag = assert(lgen.audit_string("- bg: #000000\n- red: #aaaaaa\n"))
   t.assert_eq(diag.metrics.models.cvd.protan, "vienot1999-srgb-daltonlens")
   t.assert_eq(diag.metrics.models.cvd.tritan, "brettel1997-srgb-daltonlens")
-  t.assert_eq(diag.metrics.models.gamut, "oklch-chroma-reduction-v1")
-  t.assert_eq(diag.metrics.policy.version, "3")
+  t.assert_eq(diag.metrics.models.gamut, "oklch-chroma-reduction-v2")
+  t.assert_eq(diag.metrics.policy.version, "4")
   for _, item in ipairs(diag.warns) do
     if item.code == "MUTED_COLOR" then
       t.assert_eq(item.category, "style")
@@ -98,6 +98,46 @@ t.test("neutral accents do not get hue-sector warnings", function()
   for _, item in ipairs(diag.warns) do
     t.assert_true(item.code ~= "HUE_SECTOR_MISMATCH")
   end
+end)
+
+t.test("gamut fitting finds the highest chroma when a blue ray re-enters gamut", function()
+  local blue = cm.oklab_to_oklch(cm.rgb_to_oklab(rgb("#0000ff")))
+  local function sample(c)
+    return {L=blue.L, h=blue.h, C=c}
+  end
+  t.assert_true(not cm.is_oklch_in_srgb(sample(0.29)))
+  t.assert_true(cm.is_oklch_in_srgb(blue))
+  local fit = cm.fit_oklch_to_gamut(sample(0.32))
+  t.assert_true(cm.is_oklch_in_srgb(fit))
+  t.assert_true(fit.C >= blue.C)
+  t.assert_eq(fit.hex, "#0000ff")
+end)
+
+t.test("comment prominence uses background contrast and the effective foreground", function()
+  local function overbright(text)
+    for _, warning in ipairs(assert(lgen.audit_string(text)).warns) do
+      if warning.code == "COMMENT_OVERBRIGHT" then return true end
+    end
+    return false
+  end
+  t.assert_true(not overbright("- bg: #ffffff\n- white: #222222\n- comment: #777777"))
+  t.assert_true(overbright("- bg: #ffffff\n- white: #111111\n- fg: #777777\n- comment: #222222"))
+  t.assert_true(overbright("- bg: #000000\n- fg: #aaaaaa\n- comment: #eeeeee"))
+end)
+
+t.test("camouflage ignores powerless hue and suppresses ineffective suggestions", function()
+  local neutral = assert(lgen.audit_string("- bg: #302b1c\n- yellow: #ffffff"))
+  for _, warning in ipairs(neutral.warns) do
+    t.assert_true(warning.code ~= "ACCENT_BACKGROUND_CAMOUFLAGE")
+  end
+  local tinted = assert(lgen.audit_string("- bg: #302b1c\n- yellow: #fff7e0"))
+  for _, warning in ipairs(tinted.warns) do
+    if warning.code == "ACCENT_BACKGROUND_CAMOUFLAGE" then
+      t.assert_eq(warning.suggested_hex, nil)
+      return
+    end
+  end
+  error("Expected a camouflage warning for the tinted accent")
 end)
 
 t.test("accent balancing respects light themes and preserves contrast", function()

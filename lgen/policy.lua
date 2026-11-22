@@ -1,5 +1,5 @@
 -- Project audit policy. These cutoffs are not claims of standards conformance.
-local M = { version = "3", hue_epsilon = 0.000004, bright_tolerance = 0.02 }
+local M = { version = "4", hue_epsilon = 0.000004, bright_tolerance = 0.02 }
 M.bright = {min_gap=0.06, target_gap=0.065}
 
 function M.bright_gap(normal_L, bright_L, is_dark)
@@ -19,6 +19,7 @@ end
 
 M.comment = {fail={apca=35, wcag=2.5}, warn={apca=45, wcag=2.5}, target={apca=48, wcag=2.5}}
 M.cvd = {fail=0.05, warn=0.08, target=0.085}
+M.syntax = {fail=0.04, warn=0.07}
 M.balance = {spread=0.20, std_dev=0.070}
 M.camouflage = {hue=35, apca=68, chromatic_distance=0.090, target_apca=75}
 

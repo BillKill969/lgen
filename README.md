@@ -30,7 +30,7 @@ lua bin/lgen --help
 lua bin/lgen test_themes/catppuccin_mocha_fixed.md --json
 ```
 
-Examples below use `lgen` as shorthand for `lua bin/lgen`. The test suites are verified on Lua 5.4 and 5.5; compatibility with Lua 5.1–5.3, LuaJIT, and Neovim is intended but not exercised here.
+Examples below use `lgen` as shorthand for `lua bin/lgen`. The test suites have been run on Lua 5.4, Lua 5.5, and LuaJIT.
 
 ---
 
@@ -45,6 +45,10 @@ lgen examples/flawed_theme.md
 ```bash
 lgen examples/flawed_theme.md --fix > fixed_theme.md
 ```
+
+Repairs prioritize audit failures, then readability and ANSI hierarchy warnings. Among similarly effective edits, the fixer prefers the smallest total perceptual change from the original palette. It keeps the background fixed by default and leaves style-only warnings visible for review. Use `--fix-background` to let the fixer adjust the background or `--vibrant` to request stronger accent colors.
+
+If individual suggestions stall, the fixer tries a bounded search over the normal and bright colors or Git diff red and green. A paired repair counts as one iteration. The Lua equivalent of `--fix-background` is `fix_background = true` in the options table.
 
 ### Overwrite the theme in-place with fixed colors:
 ```bash
@@ -134,7 +138,7 @@ cat theme.md | lgen - --fix --json
 
 A fix command uses the **resulting** audit for its exit code. A diff command uses the **second** theme. Export succeeds with `0` when the configuration is generated; it does not enforce a passing audit. `--export` emits the requested format and cannot be combined with `--json` or `--md`. Watch mode requires terminal output and a file input.
 
-Audit JSON identifies numerical models in `metrics.models` and the project profile/version in `metrics.policy` (currently version `3`). Normal-to-bright lightness measurements and required separation are exposed in `metrics.bright_pairs`. Diagnostics include `category` (`readability`, `semantics`, `style`) and `basis` (`project-policy`).
+Audit JSON identifies numerical models in `metrics.models` and the project profile/version in `metrics.policy` (currently version `4`). Normal-to-bright lightness measurements and required separation are exposed in `metrics.bright_pairs`. Diagnostics include `category` (`readability`, `semantics`, `style`) and `basis` (`project-policy`).
 
 Audit JSON includes `schema_version`, `fails`, `warns`, `passes`, `summary`, and `metrics`. Diagnostics contain a `code`, `message`, `context`, and an optional `suggested_hex`. Palette metric maps use string keys such as `"8"` and `"bg"`. Object keys and diagnostic ordering are deterministic for the same input, options, and Lua runtime.
 
@@ -154,7 +158,7 @@ These are project policy thresholds, rather than a standards-conformance certifi
 
 | Rule Code | Category | Description | Fail Threshold | Warn Threshold |
 |:---|:---|:---|:---|:---|
-| `LOW_CONTRAST` | Contrast | ANSI 1–7, 9–15 against background | APCA \|$L_c$\| < 45 or WCAG < 3.0 | APCA \|$L_c$\| < 60 or WCAG < 4.5 |
+| `LOW_CONTRAST`, `FG_ILLEGIBLE`, `SUBOPTIMAL_CONTRAST` | Contrast | ANSI 1–7, 9–15 and explicit foreground against background | APCA \|$L_c$\| < 45 or WCAG < 3.0 | APCA \|$L_c$\| < 60 or WCAG < 4.5 |
 | `COMMENT_ILLEGIBLE` | Comments | ANSI 8 (Bright Black) contrast | APCA \|$L_c$\| < 35 or WCAG < 2.5 | APCA \|$L_c$\| < 45 |
 | `COMMENT_OVERLY_SATURATED` | Comments | ANSI 8 chroma distracts from code | — | Chroma $C_{\text{ok}} > 0.045$ |
 | `COMMENT_TEMPERATURE_MISMATCH` | Comments | ANSI 8 tint clashes with bg tint | — | Mismatched warmth signs |

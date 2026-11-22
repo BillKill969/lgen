@@ -74,7 +74,7 @@ function M.audit(raw_palette, opts)
       vibrant = opts.vibrant or false,
       models = {
         apca="0.0.98G-4g", wcag="2.x",
-        gamut="oklch-chroma-reduction-v1",
+        gamut="oklch-chroma-reduction-v2",
         cvd={protan=cm.cvd_models.protan, deutan=cm.cvd_models.deutan, tritan=cm.cvd_models.tritan},
       },
       policy = {version=policy.version, profile="terminal"},
@@ -129,11 +129,16 @@ function M.audit(raw_palette, opts)
       local wcag_fg = cm.wcag_contrast(palette.fg, bg)
       local apca_fg = cm.apca(palette.fg, bg)
       diagnostics.metrics.contrast_scores.fg = {wcag=wcag_fg, apca=apca_fg}
-      if policy.contrast_level(apca_fg, wcag_fg, text_thresholds) == "FAIL" then
-        local fix = contrast_fix(palette.fg, text_thresholds, "FAIL")
-        add_diag("FAIL", "FG_ILLEGIBLE",
+      local level = policy.contrast_level(apca_fg, wcag_fg, text_thresholds)
+      if level == "FAIL" then
+        add_diag(level, "FG_ILLEGIBLE",
           string.format("Foreground (fg) has unreadable contrast against bg (APCA: %.1f, WCAG: %.2f:1)", apca_fg, wcag_fg),
-          { slot = "fg", wcag = wcag_fg, apca = apca_fg }, fix)
+          { slot = "fg", wcag = wcag_fg, apca = apca_fg }, contrast_fix(palette.fg, text_thresholds, level))
+      elseif level == "WARN" then
+        add_diag(level, "SUBOPTIMAL_CONTRAST",
+          string.format("Foreground (fg) has suboptimal contrast against bg (APCA: %.1f, WCAG: %.2f:1)", apca_fg, wcag_fg),
+          { slot = "fg", wcag = wcag_fg, apca = apca_fg, current_hex = palette.fg.hex },
+          contrast_fix(palette.fg, text_thresholds, level))
       end
     end
   end
@@ -157,9 +162,9 @@ function M.audit(raw_palette, opts)
         { slot = 8, apca = apca8, current_hex = palette[8].hex }, fix)
     end
 
-    if palette[7] and oklab[8].L >= oklab[7].L then
+    if fg and math.abs(apca8) >= math.abs(cm.apca(fg, bg)) then
       add_diag("WARN", "COMMENT_OVERBRIGHT",
-        "ANSI 8 (Comment) is brighter than or equal to ANSI 7 (Default Foreground)",
+        "ANSI 8 (Comment) has at least as much contrast against the background as the foreground",
         { slot = 8 })
     end
 
@@ -225,12 +230,12 @@ function M.audit(raw_palette, opts)
       local b_idx = syntax_tokens[j]
       if oklab[a_idx] and oklab[b_idx] then
         local de = cm.delta_e_ok(oklab[a_idx], oklab[b_idx])
-        if de < 0.04 then
+        if de < policy.syntax.fail then
           add_diag("FAIL", "SYNTAX_COLLISION",
             string.format("Severe collision between ANSI %d (%s) and ANSI %d (%s): ΔE_Ok = %.3f",
               a_idx, COLOR_NAMES[a_idx], b_idx, COLOR_NAMES[b_idx], de),
             { a = a_idx, b = b_idx, de = de })
-        elseif de < 0.07 then
+        elseif de < policy.syntax.warn then
           add_diag("WARN", "SYNTAX_AMBIGUITY",
             string.format("Low distinction between ANSI %d (%s) and ANSI %d (%s): ΔE_Ok = %.3f",
               a_idx, COLOR_NAMES[a_idx], b_idx, COLOR_NAMES[b_idx], de),
@@ -433,19 +438,30 @@ function M.audit(raw_palette, opts)
   local lch_bg_k = bg and (oklch.bg or (palette[0] and oklch[0]))
   local lab_bg_k = bg and (oklab.bg or (palette[0] and oklab[0]))
   if bg and lch_bg_k and lab_bg_k and lch_bg_k.C > 0.015 then
+    local function camouflage(rgb, lab, lch)
+      if lch.C <= policy.hue_epsilon then return end
+      local hue_diff = cm.hue_difference(lch.h, lch_bg_k.h)
+      if hue_diff >= policy.camouflage.hue then return end
+      local distance = cm.chromatic_distance(lab, lab_bg_k)
+      local apca = math.abs(cm.apca(rgb, bg))
+      if apca < policy.camouflage.apca or distance < policy.camouflage.chromatic_distance then
+        return hue_diff, distance
+      end
+    end
     for idx = 1, 6 do
-      if oklch[idx] and oklab[idx] then
-        local hue_diff = cm.hue_difference(oklch[idx].h, lch_bg_k.h)
-        if hue_diff < policy.camouflage.hue then
-          local c_dist = cm.chromatic_distance(oklab[idx], lab_bg_k)
-          local apca_val = math.abs(cm.apca(palette[idx], bg))
-          if apca_val < policy.camouflage.apca or c_dist < policy.camouflage.chromatic_distance then
-            local fix = fixer.adjust_contrast(palette[idx], bg, policy.camouflage.target_apca, text_thresholds.fail.wcag)
-            add_diag("WARN", "ACCENT_BACKGROUND_CAMOUFLAGE",
-              string.format("ANSI %d (%s) shares hue direction with tinted background (Δh=%.1f°, chromatic dist=%.3f), reducing visual pop",
-                idx, COLOR_NAMES[idx], hue_diff, c_dist),
-              { slot = idx, hue_diff = hue_diff, chromatic_distance = c_dist, current_hex = palette[idx].hex }, fix)
+      if palette[idx] then
+        local hue_diff, c_dist = camouflage(palette[idx], oklab[idx], oklch[idx])
+        if hue_diff then
+          local fix = fixer.adjust_contrast(palette[idx], bg, policy.camouflage.target_apca, text_thresholds.fail.wcag)
+          if fix then
+            local candidate = cm.hex_to_rgb(fix)
+            local lab = cm.rgb_to_oklab(candidate)
+            if camouflage(candidate, lab, cm.oklab_to_oklch(lab)) then fix = nil end
           end
+          add_diag("WARN", "ACCENT_BACKGROUND_CAMOUFLAGE",
+            string.format("ANSI %d (%s) shares hue direction with tinted background (Δh=%.1f°, chromatic dist=%.3f), reducing visual pop",
+              idx, COLOR_NAMES[idx], hue_diff, c_dist),
+            { slot = idx, hue_diff = hue_diff, chromatic_distance = c_dist, current_hex = palette[idx].hex }, fix)
         end
       end
     end

@@ -33,6 +33,7 @@ OPTIONS:
     --json               Output audit results as machine-readable JSON
     --md                 Output audit results as a Markdown report
     --fix                Plan and verify palette fixes; print patched Markdown
+    --fix-background     Allow --fix to adjust the background color
     --write              Atomically replace the input file when using --fix
     --max-iterations <n> Bound accepted fix steps (1-100, default: 12)
     --fail-on-warn       Return exit 1 when warnings remain
@@ -172,6 +173,7 @@ local function main(args)
     elseif flag == "--json" then opts.format = "json"
     elseif flag == "--md" then opts.format = "md"
     elseif flag == "--fix" then opts.fix = true
+    elseif flag == "--fix-background" then opts.fix_background = true
     elseif flag == "--write" then opts.write = true
     elseif flag == "--watch" then opts.watch = true
     elseif flag == "--fail-on-warn" then opts.fail_on_warn = true
@@ -206,6 +208,7 @@ local function main(args)
   local modes = (opts.export and 1 or 0) + (opts.diff_file and 1 or 0) + (opts.fix and 1 or 0)
   if modes > 1 then return invalid("--export, --diff, and --fix are mutually exclusive") end
   if opts.max_iterations and not opts.fix then return invalid("--max-iterations requires --fix") end
+  if opts.fix_background and not opts.fix then return invalid("--fix-background requires --fix") end
   if opts.fix and opts.format == "md" then return invalid("Use --fix with --json or raw Markdown output") end
   if opts.export and opts.format ~= "terminal" then return invalid("--export emits its configuration format; omit --json/--md") end
   if opts.watch and (path == "-" or opts.format ~= "terminal" or modes > 0) then

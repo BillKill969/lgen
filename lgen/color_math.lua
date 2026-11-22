@@ -93,11 +93,11 @@ function M.rgb_to_oklab(rgb)
 end
 
 -- Check if linear sRGB values fall within the [0, 1] cube (with small tolerance)
-local function is_linear_srgb_in_gamut(r_lin, g_lin, b_lin, eps)
-  eps = eps or 0.0001
-  return r_lin >= -eps and r_lin <= 1.0 + eps
-     and g_lin >= -eps and g_lin <= 1.0 + eps
-     and b_lin >= -eps and b_lin <= 1.0 + eps
+local gamut_min, gamut_max = -0.0001, 1.0001
+local function is_linear_srgb_in_gamut(r_lin, g_lin, b_lin)
+  return r_lin >= gamut_min and r_lin <= gamut_max
+     and g_lin >= gamut_min and g_lin <= gamut_max
+     and b_lin >= gamut_min and b_lin <= gamut_max
 end
 
 -- Convert Oklab {L, a, b} to linear sRGB {r_lin, g_lin, b_lin} without gamma or clamping
@@ -124,6 +124,71 @@ function M.is_oklch_in_srgb(lch)
   return is_linear_srgb_in_gamut(r_lin, g_lin, b_lin)
 end
 
+-- At fixed lightness and hue each linear RGB channel is cubic in chroma.
+-- Split at their turning points so each segment has monotone channels.
+local function max_gamut_chroma(linear_rgb, limit)
+  local zero = {linear_rgb(0)}
+  local plus = {linear_rgb(1)}
+  local minus = {linear_rgb(-1)}
+  local twice = {linear_rgb(2)}
+  local channels, points = {}, {0, limit}
+  local function add_point(chroma)
+    if chroma > 0 and chroma < limit then points[#points + 1] = chroma end
+  end
+  for i = 1, 3 do
+    local d = zero[i]
+    local b = (plus[i] + minus[i]) / 2 - d
+    local odd = (plus[i] - minus[i]) / 2
+    local a = (twice[i] - d - 4 * b - 2 * odd) / 6
+    local c = odd - a
+    channels[i] = function(chroma)
+      return ((a * chroma + b) * chroma + c) * chroma + d
+    end
+    local discriminant = b * b - 3 * a * c
+    if math_abs(a) < 1e-12 then
+      if math_abs(b) >= 1e-12 then add_point(-c / (2 * b)) end
+    elseif discriminant > 0 then
+      local root = math_sqrt(discriminant)
+      local q = -b - (b < 0 and -root or root)
+      add_point(q / (3 * a))
+      add_point(c / q)
+    end
+  end
+  table.sort(points)
+
+  local function crossing(channel, low, high, bound, increasing)
+    for _ = 1, 30 do
+      local mid = (low + high) / 2
+      if (channel(mid) < bound) == increasing then low = mid
+      else high = mid end
+    end
+    return low, high
+  end
+
+  -- Work downward from the requested chroma. A ray can re-enter gamut near blue.
+  for i = #points, 2, -1 do
+    local low, high = points[i - 1], points[i]
+    for _, channel in ipairs(channels) do
+      local start, finish = channel(low), channel(high)
+      if math_max(start, finish) < gamut_min or math_min(start, finish) > gamut_max then
+        low = nil
+        break
+      end
+      if start < gamut_min or start > gamut_max then
+        local bound = start < gamut_min and gamut_min or gamut_max
+        local _, inside = crossing(channel, low, high, bound, start < finish)
+        low = inside
+      end
+      if finish < gamut_min or finish > gamut_max then
+        local bound = finish < gamut_min and gamut_min or gamut_max
+        high = crossing(channel, low, high, bound, start < finish)
+      end
+    end
+    if low and is_linear_srgb_in_gamut(linear_rgb(high)) then return high end
+  end
+  return 0
+end
+
 -- Constant-lightness/hue chroma reduction to the sRGB gamut boundary.
 -- This is not the CSS Color 4 binary-search algorithm with local MINDE.
 -- Hex quantization can slightly change the resulting lightness and hue.
@@ -137,45 +202,24 @@ function M.fit_oklch_to_gamut(lch)
 
   local C = math_max(0, lch.C)
   local h = lch.h
-
-  -- Test if original color is already in gamut
-  local lab_orig = M.oklch_to_oklab({ L = L, C = C, h = h })
-  local r0, g0, b0 = M.oklab_to_linear_srgb(lab_orig)
-  if is_linear_srgb_in_gamut(r0, g0, b0) then
-    local rgb = {
-      r = clamp01(M.linear_to_srgb(r0)),
-      g = clamp01(M.linear_to_srgb(g0)),
-      b = clamp01(M.linear_to_srgb(b0)),
-    }
-    rgb.hex = M.rgb_to_hex(rgb)
-    rgb.L, rgb.C, rgb.h = L, C, h
-    return rgb
+  local rad = h * (math_pi / 180)
+  local cos_h, sin_h = math.cos(rad), math.sin(rad)
+  local function linear_rgb(chroma)
+    return M.oklab_to_linear_srgb({L=L, a=chroma * cos_h, b=chroma * sin_h})
   end
-
-  -- Binary search Chroma down to gamut boundary (20 iterations ~ 10^-6 precision)
-  local low = 0
-  local high = C
-
-  for _ = 1, 20 do
-    local mid = (low + high) * 0.5
-    local lab_mid = M.oklch_to_oklab({ L = L, C = mid, h = h })
-    local r_lin, g_lin, b_lin = M.oklab_to_linear_srgb(lab_mid)
-    if is_linear_srgb_in_gamut(r_lin, g_lin, b_lin) then
-      low = mid
-    else
-      high = mid
-    end
+  local r_lin, g_lin, b_lin = linear_rgb(C)
+  if not is_linear_srgb_in_gamut(r_lin, g_lin, b_lin) then
+    -- The sRGB cube and Oklab coefficients bound chroma well below 4.
+    C = max_gamut_chroma(linear_rgb, math_min(C, 4))
+    r_lin, g_lin, b_lin = linear_rgb(C)
   end
-
-  local final_lab = M.oklch_to_oklab({ L = L, C = low, h = h })
-  local r_lin, g_lin, b_lin = M.oklab_to_linear_srgb(final_lab)
   local rgb = {
     r = clamp01(M.linear_to_srgb(r_lin)),
     g = clamp01(M.linear_to_srgb(g_lin)),
     b = clamp01(M.linear_to_srgb(b_lin)),
   }
   rgb.hex = M.rgb_to_hex(rgb)
-  rgb.L, rgb.C, rgb.h = L, low, h
+  rgb.L, rgb.C, rgb.h = L, C, h
   return rgb
 end
 
@@ -294,6 +338,7 @@ function M.apca(rgb_fg, rgb_bg)
 
   local y_fg = to_y(rgb_fg)
   local y_bg = to_y(rgb_bg)
+  if math_abs(y_bg - y_fg) < 0.0005 then return 0 end
 
   local c
   if y_bg > y_fg then
